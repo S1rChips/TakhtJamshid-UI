@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="{{ settings.lang or 'en' }}" data-lang="{{ settings.lang or 'en' }}" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ s.name }} | TakhtJamshid</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body class="sub-body">
+<div class="bg-orbs"><span></span><span></span><span></span><span></span></div>
+
+<div class="sub-card">
+  <div class="sub-head">
+    <div class="logo-mark pulse">𐎠</div>
+    <div>
+      <h1>{{ s.name }}</h1>
+      <p>TakhtJamshid · <span data-i18n="sub_title">Subscription</span></p>
+    </div>
+  </div>
+
+  <div class="sub-ring-wrap">
+    <svg class="sub-ring" viewBox="0 0 160 160">
+      <circle class="ring-bg" cx="80" cy="80" r="68"/>
+      <circle class="ring-fg" cx="80" cy="80" r="68" id="ring"/>
+    </svg>
+    <div class="ring-center">
+      <div class="ring-pct" id="ringPct">0%</div>
+      <div class="ring-label" data-i18n="usage">Used</div>
+    </div>
+  </div>
+
+  <div class="sub-stats">
+    <div class="sub-stat"><span data-i18n="stat_upload">Upload</span><b id="st-up">—</b></div>
+    <div class="sub-stat"><span data-i18n="stat_download">Download</span><b id="st-down">—</b></div>
+    <div class="sub-stat"><span data-i18n="sub_total">Total</span><b id="st-total">—</b></div>
+    <div class="sub-stat"><span data-i18n="expiry">Expiry</span><b id="st-exp">—</b></div>
+  </div>
+
+  <div class="sub-actions">
+    <button class="btn btn-primary btn-block" id="copySub">📋 <span data-i18n="copy_sub">Copy Sub</span></button>
+    <div class="sub-import">
+      <a class="btn btn-block" id="imp-v2rayng">Import to v2rayNG</a>
+      <a class="btn btn-block" id="imp-streisand">Import to Streisand</a>
+    </div>
+  </div>
+
+  <div class="sub-configs" id="configs"></div>
+</div>
+
+<div class="toast-wrap" id="toastWrap"></div>
+
+<script src="{{ url_for('static', filename='js/i18n.js') }}"></script>
+<script>
+const DATA = {
+  name: {{ s.name|tojson }},
+  links: {{ s.links|tojson }},
+  up: {{ s.up }}, down: {{ s.down }}, total: {{ s.total }},
+  expiry: {{ s.expiry }}, pct: {{ pct }},
+  sub: location.origin + "/sub/{{ sub_id }}"
+};
+applyLang(LANG);
+
+const fmtBytes = (b) => { b = +b || 0; if (!b) return '0 B'; const u = ['B','KB','MB','GB','TB']; const i = Math.min(u.length-1, Math.floor(Math.log(b)/Math.log(1024))); return (b/Math.pow(1024,i)).toFixed(i?2:0)+' '+u[i]; };
+const used = DATA.up + DATA.down;
+
+document.getElementById('st-up').textContent = fmtBytes(DATA.up);
+document.getElementById('st-down').textContent = fmtBytes(DATA.down);
+document.getElementById('st-total').textContent = DATA.total ? fmtBytes(DATA.total) : '∞';
+document.getElementById('st-exp').textContent = DATA.expiry ? new Date(DATA.expiry).toLocaleDateString(LANG === 'fa' ? 'fa-IR' : LANG) : '∞';
+
+// animated ring
+const ring = document.getElementById('ring');
+const C = 2 * Math.PI * 68;
+ring.style.strokeDasharray = C;
+ring.style.strokeDashoffset = C;
+setTimeout(() => {
+  ring.style.strokeDashoffset = C * (1 - DATA.pct / 100);
+  let cur = 0; const target = Math.round(DATA.pct);
+  const tick = setInterval(() => { cur += 1; document.getElementById('ringPct').textContent = cur + '%'; if (cur >= target) clearInterval(tick); }, 16);
+}, 200);
+
+// configs list
+const toast = (m) => { const e = document.createElement('div'); e.className = 'toast ok'; e.innerHTML = '<span>✓</span><span>' + m + '</span>'; document.getElementById('toastWrap').appendChild(e); setTimeout(() => { e.style.opacity = 0; setTimeout(() => e.remove(), 300); }, 2500); };
+const copy = (txt) => { navigator.clipboard.writeText(txt); toast(t('copied')); };
+
+document.getElementById('configs').innerHTML = DATA.links.map((lk, i) => {
+  const name = (lk.split('#')[1] ? decodeURIComponent(lk.split('#')[1]) : ('config ' + (i+1)));
+  return `<div class="cfg-row" style="animation-delay:${i*0.06}s">
+    <div class="cfg-name">${name}</div>
+    <button class="btn btn-sm" data-lk="${encodeURIComponent(lk)}">📋</button></div>`;
+}).join('') || `<div class="empty">${t('no_clients')}</div>`;
+document.querySelectorAll('.cfg-row button').forEach(b => b.onclick = () => copy(decodeURIComponent(b.dataset.lk)));
+
+document.getElementById('copySub').onclick = () => copy(DATA.sub);
+document.getElementById('imp-v2rayng').href = 'v2rayng://install-sub?url=' + encodeURIComponent(DATA.sub);
+document.getElementById('imp-streisand').href = 'streisand://import/' + DATA.sub;
+</script>
+</body>
+</html>

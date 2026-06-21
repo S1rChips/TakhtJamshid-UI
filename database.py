@@ -89,6 +89,8 @@ def init_db():
         tg_id TEXT DEFAULT '',
         online INTEGER DEFAULT 0,
         last_seen INTEGER DEFAULT 0,
+        multiplier REAL DEFAULT 1,
+        comment TEXT DEFAULT '',
         created_at INTEGER NOT NULL,
         FOREIGN KEY(inbound_id) REFERENCES inbounds(id) ON DELETE CASCADE
     )""")
@@ -139,21 +141,30 @@ def init_db():
             "INSERT INTO users (username, password_hash, created_at) VALUES (?,?,?)",
             ("admin", generate_password_hash("admin"), int(time.time())),
         )
-    # default settings
+    # default settings  (panel_title is FIXED and intentionally not user-editable)
     defaults = {
         "panel_title": "TakhtJamshid",
         "theme": "dark",
         "accent": "#7c3aed",
-        "lang": "fa",
+        "lang": "en",
         "sub_port": "2096",
         "sub_path": "/sub/",
         "tg_token": "",
         "tg_chat": "",
-        "xray_status": "running",
-        "xray_version": "1.8.23",
+        "xray_status": "stopped",
+        "xray_version": "auto",
     }
     for k, v in defaults.items():
         c.execute("INSERT OR IGNORE INTO settings (key,value) VALUES (?,?)", (k, v))
+
+    # ----- lightweight migrations for older DBs -----
+    def _ensure(table, col, decl):
+        cols = [r["name"] for r in c.execute(f"PRAGMA table_info({table})").fetchall()]
+        if col not in cols:
+            c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+
+    _ensure("clients", "multiplier", "REAL DEFAULT 1")
+    _ensure("clients", "comment", "TEXT DEFAULT ''")
 
     conn.commit()
     conn.close()

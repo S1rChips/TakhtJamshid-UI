@@ -193,13 +193,14 @@ def api_client_create(iid):
     cid = db.execute(
         """INSERT INTO clients
         (inbound_id, email, uuid, password, flow, enable, total_gb, expiry_time,
-         limit_ip, sub_id, tg_id, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+         limit_ip, sub_id, tg_id, multiplier, comment, created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (iid, d.get("email", "client"), d.get("uuid") or db.new_uuid(),
          d.get("password", ""), d.get("flow", ""), int(d.get("enable", 1)),
          int(d.get("total_gb", 0)), int(d.get("expiry_time", 0)),
          int(d.get("limit_ip", 0)), d.get("sub_id") or db.new_subid(),
-         d.get("tg_id", ""), int(time.time())))
+         d.get("tg_id", ""), float(d.get("multiplier", 1) or 1),
+         d.get("comment", ""), int(time.time())))
     db.log(f"Client {d.get('email')} added to inbound {iid}")
     _apply_and_reload()
     return jsonify({"ok": True, "id": cid})
@@ -211,11 +212,12 @@ def api_client_update(cid):
     d = request.get_json(force=True)
     db.execute(
         """UPDATE clients SET email=?, uuid=?, password=?, flow=?, enable=?,
-           total_gb=?, expiry_time=?, limit_ip=?, tg_id=? WHERE id=?""",
+           total_gb=?, expiry_time=?, limit_ip=?, tg_id=?, multiplier=?, comment=? WHERE id=?""",
         (d.get("email"), d.get("uuid"), d.get("password", ""), d.get("flow", ""),
          int(d.get("enable", 1)), int(d.get("total_gb", 0)),
          int(d.get("expiry_time", 0)), int(d.get("limit_ip", 0)),
-         d.get("tg_id", ""), cid))
+         d.get("tg_id", ""), float(d.get("multiplier", 1) or 1),
+         d.get("comment", ""), cid))
     _apply_and_reload()
     return jsonify({"ok": True})
 
@@ -253,9 +255,9 @@ def api_client_link(cid):
     ib = db.query("SELECT * FROM inbounds WHERE id=?", (c["inbound_id"],), one=True)
     host = request.args.get("host") or host_from_request()
     return jsonify({"ok": True, "link": xc.build_link(ib, c, host),
-                    "sub": f"/sub/{c['sub_id']}",
+                    "sub": f"/sub/{c['sub_id']}", "info": f"/i/{c['sub_id']}",
                     "up": c["up"], "down": c["down"], "total": c["total_gb"],
-                    "expiry": c["expiry_time"]})
+                    "expiry": c["expiry_time"], "multiplier": c["multiplier"]})
 
 
 @app.route("/api/clients/<int:cid>/qr")
@@ -440,7 +442,10 @@ def api_xray_keys():
 def api_settings():
     if request.method == "POST":
         d = request.get_json(force=True)
+        protected = {"panel_title"}  # panel/site name is fixed, not editable
         for k, v in d.items():
+            if k in protected:
+                continue
             db.set_setting(k, v)
         return jsonify({"ok": True})
     return jsonify({"ok": True, "settings": db.get_settings()})
@@ -465,22 +470,44 @@ def api_logs():
 
 
 # ------------------------------------------------------------------ subscription (public)
-@app.route("/sub/<sub_id>")
-def subscription(sub_id):
+def _collect_sub(sub_id):
     rows = db.query("SELECT * FROM clients WHERE sub_id=?", (sub_id,))
     if not rows:
-        abort(404)
+        return None
     host = host_from_request()
-    links, up, down, total, expiry = [], 0, 0, 0, 0
+    links, up, down, total, expiry, name = [], 0, 0, 0, 0, ""
     for c in rows:
         ib = db.query("SELECT * FROM inbounds WHERE id=?", (c["inbound_id"],), one=True)
         if ib:
             links.append(xc.build_link(ib, c, host))
         up += c["up"]; down += c["down"]; total += c["total_gb"]
         expiry = c["expiry_time"] or expiry
-    body = xc.build_subscription(links)
-    headers = xc.sub_headers(up, down, total, expiry)
-    return Response(body, mimetype="text/plain", headers=headers)
+        name = c["email"]
+    return {"rows": rows, "links": links, "up": up, "down": down,
+            "total": total, "expiry": expiry, "name": name}
+
+
+@app.route("/sub/<sub_id>")
+def subscription(sub_id):
+    s = _collect_sub(sub_id)
+    if not s:
+        abort(404)
+    fmt = request.args.get("format", "base64")
+    headers = xc.sub_headers(s["up"], s["down"], s["total"], s["expiry"])
+    if fmt in ("raw", "links"):
+        return Response("\n".join(s["links"]), mimetype="text/plain", headers=headers)
+    return Response(xc.build_subscription(s["links"]), mimetype="text/plain", headers=headers)
+
+
+@app.route("/i/<sub_id>")
+def subscription_info(sub_id):
+    s = _collect_sub(sub_id)
+    if not s:
+        abort(404)
+    used = s["up"] + s["down"]
+    pct = min(100, used / s["total"] * 100) if s["total"] else 0
+    return render_template("sub.html", s=s, used=used, pct=round(pct, 1),
+                           sub_id=sub_id, settings=db.get_settings())
 
 
 if __name__ == "__main__":

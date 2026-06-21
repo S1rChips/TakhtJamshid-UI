@@ -1,51 +1,62 @@
 <!DOCTYPE html>
-<html lang="fa" dir="rtl" data-theme="dark">
+<html lang="{{ settings.lang or 'en' }}" data-lang="{{ settings.lang or 'en' }}" data-theme="{{ settings.theme or 'dark' }}">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ورود | TakhtJamshid</title>
+<title>Login | TakhtJamshid</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body class="login-body">
-<div class="bg-orbs"><span></span><span></span><span></span></div>
+<div class="bg-orbs"><span></span><span></span><span></span><span></span></div>
+
+<div class="login-lang">
+  <button class="icon-btn" id="langToggle">🌐</button>
+  <div class="lang-menu" id="langMenu"></div>
+</div>
 
 <div class="login-card">
   <div class="login-logo">
-    <div class="logo-mark">𐎠</div>
+    <div class="logo-mark pulse">𐎠</div>
     <h1>TakhtJamshid</h1>
-    <p>پنل مدیریت V2Ray / Xray</p>
+    <p data-i18n="login_subtitle">V2Ray / Xray Management Panel</p>
   </div>
   <form id="loginForm">
     <div class="field">
-      <label>نام کاربری</label>
+      <label data-i18n="acc_user">Username</label>
       <input type="text" name="username" value="admin" autocomplete="username" required>
     </div>
     <div class="field">
-      <label>رمز عبور</label>
+      <label data-i18n="password">Password</label>
       <input type="password" name="password" value="admin" autocomplete="current-password" required>
     </div>
     <div class="login-error" id="loginError"></div>
-    <button type="submit" class="btn btn-primary btn-block">ورود به پنل</button>
+    <button type="submit" class="btn btn-primary btn-block" data-i18n="login_btn">Sign in</button>
   </form>
-  <div class="login-foot">پیش‌فرض: admin / admin</div>
+  <div class="login-foot" data-i18n="default_creds">Default: admin / admin</div>
 </div>
 
+<script src="{{ url_for('static', filename='js/i18n.js') }}"></script>
 <script>
+applyLang(LANG);
+const menu = document.getElementById('langMenu');
+function buildLangMenu() {
+  menu.innerHTML = langList().map(l => `<button class="lang-opt ${l.code === LANG ? 'active' : ''}" data-lang="${l.code}">${l.name}</button>`).join('');
+  menu.querySelectorAll('.lang-opt').forEach(b => b.onclick = () => { applyLang(b.dataset.lang); localStorage.setItem('tj_lang', b.dataset.lang); menu.classList.remove('open'); buildLangMenu(); });
+}
+buildLangMenu();
+document.getElementById('langToggle').onclick = (e) => { e.stopPropagation(); menu.classList.toggle('open'); };
+document.addEventListener('click', () => menu.classList.remove('open'));
+
 const form = document.getElementById('loginForm');
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
-  const body = {
-    username: form.username.value,
-    password: form.password.value
-  };
   const r = await fetch('/login', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(body)
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: form.username.value, password: form.password.value })
   });
   const data = await r.json();
-  if (data.ok) { window.location = '/'; }
-  else { document.getElementById('loginError').textContent = data.error || 'خطا'; }
+  if (data.ok) window.location = '/';
+  else document.getElementById('loginError').textContent = t('login_error');
 });
 </script>
 </body>

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="fa" dir="rtl" data-theme="{{ settings.theme or 'dark' }}">
+<html lang="{{ settings.lang or 'en' }}" data-lang="{{ settings.lang or 'en' }}" data-theme="{{ settings.theme or 'dark' }}">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
-<div class="bg-orbs"><span></span><span></span><span></span></div>
+<div class="bg-orbs"><span></span><span></span><span></span><span></span></div>
 
 <!-- Sidebar -->
 <aside class="sidebar" id="sidebar">
@@ -16,14 +16,14 @@
     <span>TakhtJamshid</span>
   </div>
   <nav class="nav">
-    <a class="nav-item active" data-page="overview"><i>◈</i> داشبورد</a>
-    <a class="nav-item" data-page="inbounds"><i>⇄</i> Inbounds</a>
-    <a class="nav-item" data-page="outbounds"><i>⇲</i> Outbounds</a>
-    <a class="nav-item" data-page="routing"><i>⤳</i> مسیریابی</a>
-    <a class="nav-item" data-page="nodes"><i>⬢</i> نودها</a>
-    <a class="nav-item" data-page="xray"><i>⚙</i> هسته Xray</a>
-    <a class="nav-item" data-page="logs"><i>≡</i> لاگ‌ها</a>
-    <a class="nav-item" data-page="settings"><i>⚒</i> تنظیمات</a>
+    <a class="nav-item active" data-page="overview"><i>◈</i> <span data-i18n="nav_overview">Dashboard</span></a>
+    <a class="nav-item" data-page="inbounds"><i>⇄</i> <span data-i18n="nav_inbounds">Inbounds</span></a>
+    <a class="nav-item" data-page="outbounds"><i>⇲</i> <span data-i18n="nav_outbounds">Outbounds</span></a>
+    <a class="nav-item" data-page="routing"><i>⤳</i> <span data-i18n="nav_routing">Routing</span></a>
+    <a class="nav-item" data-page="nodes"><i>⬢</i> <span data-i18n="nav_nodes">Nodes</span></a>
+    <a class="nav-item" data-page="xray"><i>⚙</i> <span data-i18n="nav_xray">Xray Core</span></a>
+    <a class="nav-item" data-page="logs"><i>≡</i> <span data-i18n="nav_logs">Logs</span></a>
+    <a class="nav-item" data-page="settings"><i>⚒</i> <span data-i18n="nav_settings">Settings</span></a>
   </nav>
   <div class="sidebar-foot">
     <div class="xray-pill" id="xrayPill"><span class="dot"></span> Xray</div>
@@ -34,20 +34,23 @@
 <main class="main">
   <header class="topbar">
     <button class="icon-btn" id="menuToggle">☰</button>
-    <h2 id="pageTitle">داشبورد</h2>
+    <h2 id="pageTitle">Dashboard</h2>
     <div class="topbar-right">
-      <button class="icon-btn" id="themeToggle" title="تغییر تم">🌙</button>
-      <div class="user-chip">
-        <span class="avatar">{{ username[0]|upper }}</span>
-        <span>{{ username }}</span>
+      <div class="lang-wrap">
+        <button class="icon-btn" id="langToggle" title="Language">🌐</button>
+        <div class="lang-menu" id="langMenu"></div>
       </div>
-      <a href="/logout" class="icon-btn" title="خروج">⏻</a>
+      <button class="icon-btn" id="themeToggle" title="Theme">🌙</button>
+      <div class="user-chip">
+        <span class="avatar" id="userAvatar">{{ username[0]|upper }}</span>
+        <span id="userName">{{ username }}</span>
+      </div>
+      <a href="/logout" class="icon-btn" title="Logout">⏻</a>
     </div>
   </header>
 
   <div class="content" id="content">
-    <!-- pages injected by app.js -->
-    <div class="loader">در حال بارگذاری…</div>
+    <div class="loader"><span class="spinner"></span></div>
   </div>
 </main>
 
@@ -55,7 +58,7 @@
 <div class="modal-overlay" id="modalOverlay">
   <div class="modal" id="modal">
     <div class="modal-head">
-      <h3 id="modalTitle">عنوان</h3>
+      <h3 id="modalTitle"></h3>
       <button class="icon-btn" id="modalClose">✕</button>
     </div>
     <div class="modal-body" id="modalBody"></div>
@@ -66,6 +69,7 @@
 <div class="toast-wrap" id="toastWrap"></div>
 
 <script>window.PANEL_USER = "{{ username }}";</script>
+<script src="{{ url_for('static', filename='js/i18n.js') }}"></script>
 <script src="{{ url_for('static', filename='js/app.js') }}"></script>
 </body>
 </html>

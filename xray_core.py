@@ -289,11 +289,16 @@ def poll_once():
                 d[0] += val
             else:
                 d[1] += val
-    for cid, (up, down) in client_traffic.items():
-        prev = db.query("SELECT up, down FROM clients WHERE id=?", (cid,), one=True)
-        online = 1 if prev and (up > prev["up"] or down > prev["down"]) else 0
+    for cid, (raw_up, raw_down) in client_traffic.items():
+        prev = db.query("SELECT up, down, multiplier FROM clients WHERE id=?", (cid,), one=True)
+        if not prev:
+            continue
+        mult = prev["multiplier"] if prev["multiplier"] else 1.0
+        up = int(raw_up * mult)
+        down = int(raw_down * mult)
+        online = 1 if (up > prev["up"] or down > prev["down"]) else 0
         db.execute("UPDATE clients SET up=?, down=?, online=?, last_seen=? WHERE id=?",
-                   (up, down, online or 0, now if online else (prev or {}).get("last_seen", 0), cid))
+                   (up, down, online, now if online else prev.get("last_seen", 0), cid))
 
     # per-inbound (inbound>>>inbound-<id>>>>traffic>>>up/down)
     inbound_traffic = {}
