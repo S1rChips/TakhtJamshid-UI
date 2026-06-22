@@ -147,10 +147,29 @@ async function installXray() {
 /* ============================ INBOUNDS ============================ */
 Pages.inbounds = async () => {
   const d = await api('/api/inbounds');
-  let rows = d.inbounds.length ? '' :
-    `<tr><td colspan="8"><div class="empty"><div class="big">⇄</div>${t('no_inbounds')}</div></td></tr>`;
-  d.inbounds.forEach(ib => {
+  window._ibData = d.inbounds;
+  $('#content').innerHTML = `
+    <div class="panel"><div class="panel-head"><h3>${t('inbounds_list')}</h3>
+      <div class="search-box"><span>🔍</span><input id="ib-search" placeholder="${t('search_ph')}"></div>
+      <button class="btn btn-primary" onclick="InboundForm.open()">+ ${t('new_inbound')}</button></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th></th><th>${t('name')}</th><th>${t('protocol')}</th><th>${t('port')}</th><th>${t('clients')}</th><th>${t('traffic')}</th><th>${t('enable')}</th><th>${t('actions')}</th></tr></thead>
+        <tbody id="ib-tbody"></tbody></table></div></div>`;
+  $('#ib-search').oninput = (e) => renderInbounds(e.target.value.trim().toLowerCase());
+  renderInbounds('');
+};
+
+function renderInbounds(q) {
+  const data = window._ibData || [];
+  const match = (ib) => !q || ib.remark.toLowerCase().includes(q) || ib.protocol.includes(q) ||
+    String(ib.port).includes(q) || ib.clients.some(c => (c.email || '').toLowerCase().includes(q));
+  const list = data.filter(match);
+  let rows = list.length ? '' :
+    `<tr><td colspan="8"><div class="empty"><div class="big">${q ? '🔍' : '⇄'}</div>${q ? t('no_match') : t('no_inbounds')}</div></td></tr>`;
+  list.forEach(ib => {
     const used = ib.up + ib.down, pct = ib.total ? Math.min(100, used / ib.total * 100) : 0;
+    const shownClients = q ? ib.clients.filter(c => (c.email || '').toLowerCase().includes(q) ||
+      ib.remark.toLowerCase().includes(q) || ib.protocol.includes(q) || String(ib.port).includes(q)) : ib.clients;
     rows += `<tr>
       <td><span class="expand-btn" data-ib="${ib.id}">▸</span></td>
       <td><b>${esc(ib.remark)}</b></td>
@@ -164,22 +183,20 @@ Pages.inbounds = async () => {
         <button class="btn btn-sm" onclick="resetInbound(${ib.id})" title="${t('reset')}">↺</button>
         <button class="btn btn-sm btn-danger" onclick="delInbound(${ib.id})" title="${t('delete')}">✕</button>
       </td></tr>
-      <tbody class="client-body" id="cb-${ib.id}" style="display:none">
-        ${ib.clients.map(cl => clientRow(cl, ib)).join('') ||
+      <tbody class="client-body" id="cb-${ib.id}" style="${q ? '' : 'display:none'}">
+        ${shownClients.map(cl => clientRow(cl, ib)).join('') ||
           `<tr class="client-row"><td colspan="8" style="color:var(--text-dim)">${t('no_clients')}</td></tr>`}
       </tbody>`;
   });
-  $('#content').innerHTML = `
-    <div class="panel"><div class="panel-head"><h3>${t('inbounds_list')}</h3>
-      <button class="btn btn-primary" onclick="InboundForm.open()">+ ${t('new_inbound')}</button></div>
-      <div class="table-wrap"><table>
-        <thead><tr><th></th><th>${t('name')}</th><th>${t('protocol')}</th><th>${t('port')}</th><th>${t('clients')}</th><th>${t('traffic')}</th><th>${t('enable')}</th><th>${t('actions')}</th></tr></thead>
-        <tbody>${rows}</tbody></table></div></div>`;
-  $$('.expand-btn').forEach(b => b.onclick = () => {
-    const body = $(`#cb-${b.dataset.ib}`), show = body.style.display === 'none';
-    body.style.display = show ? '' : 'none'; b.classList.toggle('open', show);
+  $('#ib-tbody').innerHTML = rows;
+  $$('.expand-btn').forEach(b => {
+    if (q) b.classList.add('open');
+    b.onclick = () => {
+      const body = $(`#cb-${b.dataset.ib}`), show = body.style.display === 'none';
+      body.style.display = show ? '' : 'none'; b.classList.toggle('open', show);
+    };
   });
-};
+}
 
 function clientRow(cl, ib) {
   const used = cl.up + cl.down, pct = cl.total_gb ? Math.min(100, used / cl.total_gb * 100) : 0;
@@ -434,7 +451,14 @@ Pages.outbounds = async () => {
 const OutboundForm = {
   open() {
     Modal.open(t('new_outbound'), `
-      <div class="row">${fld(t('tag'), inp('o-tag', '', 'proxy-out'))}${fld(t('protocol'), sel('o-proto', ['freedom', 'blackhole', 'http', 'socks', 'vless', 'vmess', 'trojan', 'wireguard'], 'http'))}</div>
+      <div class="uri-import">
+        <label>${t('import_uri')} <span class="badge badge-proto">${t('from_uri')}</span></label>
+        <div class="inline"><input id="o-uri" placeholder="vless:// · vmess:// · trojan:// · ss://">
+          <button class="btn btn-sm" type="button" onclick="OutboundForm.useUri()">↧</button></div>
+        <div class="hint">${t('uri_hint')}</div>
+      </div>
+      <div class="divider"><span>${t('or_manual')}</span></div>
+      <div class="row">${fld(t('tag'), inp('o-tag', '', 'proxy-out'))}${fld(t('protocol'), sel('o-proto', ['freedom', 'blackhole', 'http', 'socks', 'vless', 'vmess', 'trojan', 'shadowsocks', 'wireguard'], 'http'))}</div>
       <div id="dyn-out"></div>
     `, `<button class="btn btn-primary" id="o-save">${t('create')}</button>
         <button class="btn btn-ghost" onclick="Modal.close()">${t('cancel')}</button>`, true);
@@ -442,15 +466,26 @@ const OutboundForm = {
     this.render();
     $('#o-save').onclick = async () => {
       const v = (id) => { const e = $(id); return e ? e.value : ''; };
-      await api('/api/outbounds', { method: 'POST', body: {
-        tag: v('#o-tag') || 'proxy', protocol: v('#o-proto'),
-        address: v('#o-addr'), port: +v('#o-port') || 0,
-        user: v('#o-user'), pass: v('#o-pass'), uuid: v('#o-uuid'),
-        secretKey: v('#o-secret'), peerKey: v('#o-peer'),
-        security: v('#o-sec') || 'none', sni: v('#o-sni'), send_through: v('#o-st')
-      }});
-      Modal.close(); toast(t('saved')); Pages.outbounds();
+      const uri = v('#o-uri').trim();
+      const body = uri
+        ? { uri, tag: v('#o-tag') || '', send_through: v('#o-st') }
+        : { tag: v('#o-tag') || 'proxy', protocol: v('#o-proto'),
+            address: v('#o-addr'), port: +v('#o-port') || 0,
+            user: v('#o-user'), pass: v('#o-pass'), uuid: v('#o-uuid'),
+            method: v('#o-method'), secretKey: v('#o-secret'), peerKey: v('#o-peer'),
+            security: v('#o-sec') || 'none', sni: v('#o-sni'), send_through: v('#o-st') };
+      const r = await api('/api/outbounds', { method: 'POST', body });
+      if (r.ok) { Modal.close(); toast(t('saved')); Pages.outbounds(); }
+      else toast(r.error || t('error'), 'err');
     };
+  },
+  useUri() {
+    const uri = $('#o-uri').value.trim();
+    if (!uri) return;
+    const scheme = uri.split('://')[0];
+    const map = { vless: 'vless', vmess: 'vmess', trojan: 'trojan', ss: 'shadowsocks' };
+    if (map[scheme]) { $('#o-proto').value = map[scheme]; this.render(); }
+    toast(t('from_uri'));
   },
   render() {
     const p = $('#o-proto').value;
@@ -463,6 +498,8 @@ const OutboundForm = {
       ${fld(t('uuid'), inp('o-uuid'))}<div class="row">${fld(t('security'), sel('o-sec', ['none', 'tls'], 'tls'))}${fld(t('sni'), inp('o-sni'))}</div>`;
     else if (p === 'trojan') h = `<div class="row">${fld(t('address'), inp('o-addr'))}${fld(t('port'), inp('o-port', '', '443', 'number'))}</div>
       ${fld(t('password'), inp('o-pass'))}<div class="row">${fld(t('security'), sel('o-sec', ['tls'], 'tls'))}${fld(t('sni'), inp('o-sni'))}</div>`;
+    else if (p === 'shadowsocks') h = `<div class="row">${fld(t('address'), inp('o-addr'))}${fld(t('port'), inp('o-port', '', '8388', 'number'))}</div>
+      <div class="row">${fld(t('ss_method'), sel('o-method', SS_METHODS, SS_METHODS[0]))}${fld(t('password'), inp('o-pass'))}</div>`;
     else if (p === 'wireguard') h = `<div class="row">${fld(t('endpoint'), inp('o-addr'))}${fld(t('port'), inp('o-port', '', '51820', 'number'))}</div>
       <div class="row">${fld(t('secret_key'), inp('o-secret'))}${fld(t('peer_pubkey'), inp('o-peer'))}</div>`;
     $('#dyn-out').innerHTML = h;
@@ -587,8 +624,20 @@ Pages.settings = async () => {
     <div class="panel"><div class="panel-head"><h3>${t('change_account')}</h3></div><div class="pad">
       <div class="row">${fld(t('new_username'), inp('s-user', window.PANEL_USER))}${fld(t('new_password'), inp('s-pass', '', '••••••', 'password'))}</div>
       <button class="btn btn-primary" onclick="saveAccount()">${t('update_account')}</button></div></div>
+    <div class="panel"><div class="panel-head"><h3>${t('https_ssl')}</h3></div><div class="pad">
+      <div class="row">${fld(t('cert_path'), inp('s-cert', s.panel_cert, '/etc/ssl/fullchain.pem'))}${fld(t('key_path'), inp('s-key', s.panel_key, '/etc/ssl/privkey.pem'))}</div>
+      <div class="row-btns">
+        <button class="btn btn-primary" onclick="applySsl()">🔒 ${t('apply_ssl')}</button>
+        <button class="btn" onclick="genSelfSigned()">${t('gen_selfsigned')}</button>
+        <button class="btn btn-ghost" onclick="disableSsl()">${t('disable_https')}</button>
+      </div></div></div>
+    <div class="panel"><div class="panel-head"><h3>${t('panel_mgmt')}</h3></div><div class="pad">
+      <div class="kv"><span>${t('panel_version')}</span><b id="pv-ver">…</b></div>
+      <div class="kv"><span>Repo</span><b id="pv-repo" style="font-size:12px">…</b></div>
+      <div class="row-btns" style="margin-top:12px"><button class="btn btn-primary" onclick="updatePanel()">⬆ ${t('check_update')}</button></div></div></div>
     <div class="panel"><div class="panel-head"><h3>${t('rest_api')}</h3></div><div class="pad hint">
       ${t('api_desc')}<br><code>GET /api/inbounds</code> · <code>POST /api/xray/restart</code> · <code>GET /api/xray/keys</code></div></div>`;
+  api('/api/panel/version').then(d => { if (d.ok) { $('#pv-ver').textContent = 'v' + d.version; $('#pv-repo').textContent = d.repo; } });
   $('#s-lang').onchange = (e) => { applyLang(e.target.value); api('/api/settings', { method: 'POST', body: { lang: e.target.value } }); buildLangMenu(); onLangChange(); };
   $('#s-theme').onchange = (e) => { document.documentElement.setAttribute('data-theme', e.target.value); applyThemeIcon(); api('/api/settings', { method: 'POST', body: { theme: e.target.value } }); };
 };
@@ -601,6 +650,24 @@ async function saveAccount() {
   const d = await api('/api/account', { method: 'POST', body: { username: $('#s-user').value, password: $('#s-pass').value } });
   if (d.ok) { window.PANEL_USER = $('#s-user').value; $('#userName').textContent = window.PANEL_USER; $('#userAvatar').textContent = window.PANEL_USER[0].toUpperCase(); toast(t('account_updated')); $('#s-pass').value = ''; }
   else toast(d.error || t('error'), 'err');
+}
+async function applySsl() {
+  const d = await api('/api/panel/ssl', { method: 'POST', body: { action: 'set', cert: $('#s-cert').value, key: $('#s-key').value } });
+  toast(d.ok ? t('restart_required') : (d.error || t('error')), d.ok ? 'ok' : 'err');
+}
+async function genSelfSigned() {
+  const d = await api('/api/panel/ssl', { method: 'POST', body: { action: 'selfsigned' } });
+  if (d.ok) { $('#s-cert').value = d.cert; $('#s-key').value = d.key; toast(t('ssl_done')); }
+  else toast(d.error || t('error'), 'err');
+}
+async function disableSsl() {
+  const d = await api('/api/panel/ssl', { method: 'POST', body: { action: 'disable' } });
+  $('#s-cert').value = ''; $('#s-key').value = ''; toast(d.message || t('done'));
+}
+async function updatePanel() {
+  toast(t('updating'));
+  const d = await api('/api/panel/update', { method: 'POST' });
+  toast(d.ok ? (d.message || t('done')) : (t('error') + ': ' + (d.message || '')), d.ok ? 'ok' : 'err');
 }
 
 /* ---------- periodic refresh of overview ---------- */

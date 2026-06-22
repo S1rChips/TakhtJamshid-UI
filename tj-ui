@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# ============================================================
+#  tj-ui - TakhtJamshid Panel manager
+#  (placeholders below are filled in by install.sh)
+# ============================================================
+INSTALL_DIR="__INSTALL_DIR__"
+SERVICE="__SERVICE__"
+PY="$INSTALL_DIR/venv/bin/python"
+
+G='\033[0;32m'; R='\033[0;31m'; C='\033[0;36m'; P='\033[0;35m'; Y='\033[1;33m'; NC='\033[0m'
+
+port() { grep -oP 'TJ_PORT=\K[0-9]+' "/etc/systemd/system/${SERVICE}.service" 2>/dev/null || echo 2053; }
+
+header() {
+  clear
+  echo -e "${P}"
+  echo "   ╔══════════════════════════════════════╗"
+  echo "   ║        TakhtJamshid  ·  tj-ui         ║"
+  echo "   ╚══════════════════════════════════════╝"
+  echo -e "${NC}"
+  if systemctl is-active --quiet "$SERVICE"; then
+    echo -e "   Status: ${G}● running${NC}   Port: $(port)"
+  else
+    echo -e "   Status: ${R}● stopped${NC}   Port: $(port)"
+  fi
+  echo
+}
+
+do_status()  { systemctl status "$SERVICE" --no-pager; }
+do_start()   { systemctl start "$SERVICE";   echo -e "${G}started${NC}"; }
+do_stop()    { systemctl stop "$SERVICE";    echo -e "${Y}stopped${NC}"; }
+do_restart() { systemctl restart "$SERVICE"; echo -e "${G}restarted${NC}"; }
+do_enable()  { systemctl enable "$SERVICE";  echo -e "${G}enabled at boot${NC}"; }
+do_disable() { systemctl disable "$SERVICE"; echo -e "${Y}disabled at boot${NC}"; }
+do_log()     { journalctl -u "$SERVICE" -n 80 --no-pager; }
+do_xray()    { "$PY" -c "import xray_core as x; print(x.status())"; }
+
+do_update() {
+  echo -e "${C}Updating panel from GitHub...${NC}"
+  "$PY" -c "import xray_core as x; ok,msg=x.update_panel(); print(('OK ' if ok else 'ERR ')+str(msg))"
+  systemctl restart "$SERVICE"
+  echo -e "${G}Updated & restarted.${NC}"
+}
+
+do_port() {
+  read -rp "New port: " np
+  [[ "$np" =~ ^[0-9]+$ ]] || { echo -e "${R}invalid${NC}"; return; }
+  sed -i "s|TJ_PORT=[0-9]*|TJ_PORT=${np}|" "/etc/systemd/system/${SERVICE}.service"
+  systemctl daemon-reload; systemctl restart "$SERVICE"
+  echo -e "${G}Port changed to ${np}.${NC}"
+}
+
+do_reset_admin() {
+  "$PY" - <<'PYEOF'
+import database as db
+db.init_db()
+u = db.query("SELECT id FROM users LIMIT 1", one=True)
+if u:
+    db.change_credentials(u["id"], "admin", "admin")
+    print("admin / admin restored")
+PYEOF
+}
+
+do_uninstall() {
+  read -rp "Remove TakhtJamshid completely? (yes/no): " a
+  [ "$a" = "yes" ] || return
+  systemctl stop "$SERVICE" 2>/dev/null || true
+  systemctl disable "$SERVICE" 2>/dev/null || true
+  rm -f "/etc/systemd/system/${SERVICE}.service" /usr/local/bin/tj-ui
+  systemctl daemon-reload
+  echo -e "${Y}Service removed. Data kept at ${INSTALL_DIR} (delete manually if desired).${NC}"
+}
+
+menu() {
+  header
+  echo "   1) Status            6) Update panel"
+  echo "   2) Start             7) Change port"
+  echo "   3) Stop              8) View logs"
+  echo "   4) Restart           9) Reset admin (admin/admin)"
+  echo "   5) Enable at boot    10) Xray status"
+  echo "   0) Uninstall         q) Quit"
+  echo
+  read -rp "   Select: " ch
+  case "$ch" in
+    1) do_status;;        2) do_start;;     3) do_stop;;
+    4) do_restart;;       5) do_enable;;    6) do_update;;
+    7) do_port;;          8) do_log;;       9) do_reset_admin;;
+    10) do_xray;;         0) do_uninstall;; q|Q) exit 0;;
+    *) echo "invalid";;
+  esac
+  echo; read -rp "Press Enter..." _; menu
+}
+
+case "$1" in
+  status)  do_status;;
+  start)   do_start;;
+  stop)    do_stop;;
+  restart) do_restart;;
+  enable)  do_enable;;
+  disable) do_disable;;
+  update)  do_update;;
+  log|logs) do_log;;
+  port)    do_port;;
+  xray)    do_xray;;
+  reset-admin) do_reset_admin;;
+  uninstall) do_uninstall;;
+  ""|menu) menu;;
+  *) echo "Usage: tj-ui [status|start|stop|restart|enable|disable|update|log|port|xray|reset-admin|uninstall]";;
+esac

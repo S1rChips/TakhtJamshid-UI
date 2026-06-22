@@ -5,11 +5,80 @@ client share URIs (vless/vmess/trojan/ss) and subscription bodies.
 """
 import json
 import base64
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlparse, parse_qs, unquote
 
 
 def _b64(s: str) -> str:
     return base64.b64encode(s.encode()).decode()
+
+
+def _b64decode(s: str) -> str:
+    s = s.strip()
+    s += "=" * (-len(s) % 4)
+    return base64.b64decode(s).decode(errors="ignore")
+
+
+def parse_uri(uri: str) -> dict:
+    """Parse a vless:// / vmess:// / trojan:// / ss:// share link into an
+    outbound spec: {tag, protocol, address, port, settings, stream_settings}."""
+    uri = (uri or "").strip()
+
+    def stream_from_query(q, security):
+        ss = {}
+        net = (q.get("type", ["tcp"])[0])
+        ss["__net"] = net
+        ss["__sec"] = security or q.get("security", ["none"])[0]
+        if net == "ws":
+            ss["path"] = q.get("path", ["/"])[0]; ss["host"] = q.get("host", [""])[0]
+        elif net == "grpc":
+            ss["serviceName"] = q.get("serviceName", [""])[0]
+        elif net in ("httpupgrade", "xhttp"):
+            ss["path"] = q.get("path", ["/"])[0]; ss["host"] = q.get("host", [""])[0]
+        if q.get("sni"):
+            ss["sni"] = q["sni"][0]
+        if q.get("pbk"):
+            ss["publicKey"] = q["pbk"][0]; ss["shortId"] = q.get("sid", [""])[0]
+        if q.get("fp"):
+            ss["fp"] = q["fp"][0]
+        return ss
+
+    if uri.startswith("vmess://"):
+        conf = json.loads(_b64decode(uri[len("vmess://"):]))
+        return {"tag": conf.get("ps", "vmess-out"), "protocol": "vmess",
+                "address": conf.get("add", ""), "port": int(conf.get("port", 0) or 0),
+                "uuid": conf.get("id", ""), "security": conf.get("tls", "") or "none",
+                "sni": conf.get("sni", ""), "network": conf.get("net", "tcp"),
+                "path": conf.get("path", ""), "host": conf.get("host", "")}
+
+    p = urlparse(uri)
+    q = parse_qs(p.query)
+    scheme = p.scheme
+    addr = p.hostname or ""
+    port = p.port or 0
+    tag = unquote(p.fragment) if p.fragment else f"{scheme}-out"
+
+    if scheme == "vless":
+        return {"tag": tag, "protocol": "vless", "address": addr, "port": port,
+                "uuid": p.username or "", "flow": q.get("flow", [""])[0],
+                "security": q.get("security", ["none"])[0], "sni": q.get("sni", [""])[0],
+                "network": q.get("type", ["tcp"])[0], "path": q.get("path", [""])[0],
+                "host": q.get("host", [""])[0], "pbk": q.get("pbk", [""])[0],
+                "sid": q.get("sid", [""])[0], "fp": q.get("fp", [""])[0],
+                "serviceName": q.get("serviceName", [""])[0]}
+    if scheme == "trojan":
+        return {"tag": tag, "protocol": "trojan", "address": addr, "port": port,
+                "pass": p.username or "", "security": q.get("security", ["tls"])[0],
+                "sni": q.get("sni", [""])[0], "network": q.get("type", ["tcp"])[0]}
+    if scheme == "ss":
+        userinfo = p.username or ""
+        try:
+            dec = _b64decode(userinfo)
+            method, password = dec.split(":", 1)
+        except Exception:
+            method, password = "chacha20-ietf-poly1305", userinfo
+        return {"tag": tag, "protocol": "shadowsocks", "address": addr, "port": port,
+                "method": method, "pass": password}
+    raise ValueError("unsupported uri scheme")
 
 
 def _load(j, default=None):

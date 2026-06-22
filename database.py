@@ -165,6 +165,19 @@ def init_db():
 
     _ensure("clients", "multiplier", "REAL DEFAULT 1")
     _ensure("clients", "comment", "TEXT DEFAULT ''")
+    # raw_* hold the last cumulative counter read from Xray, so totals survive
+    # an Xray restart (the live counters reset to 0 on every restart).
+    _ensure("clients", "raw_up", "INTEGER DEFAULT 0")
+    _ensure("clients", "raw_down", "INTEGER DEFAULT 0")
+    _ensure("inbounds", "raw_up", "INTEGER DEFAULT 0")
+    _ensure("inbounds", "raw_down", "INTEGER DEFAULT 0")
+    _ensure("outbounds", "raw_up", "INTEGER DEFAULT 0")
+    _ensure("outbounds", "raw_down", "INTEGER DEFAULT 0")
+
+    # panel TLS + update settings
+    for k, v in {"panel_cert": "", "panel_key": "",
+                 "repo_url": "https://github.com/S1rChips/TakhtJamshid-UI"}.items():
+        c.execute("INSERT OR IGNORE INTO settings (key,value) VALUES (?,?)", (k, v))
 
     conn.commit()
     conn.close()

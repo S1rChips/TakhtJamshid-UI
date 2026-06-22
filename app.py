@@ -3,6 +3,7 @@ TakhtJamshid Panel - main Flask application (real Xray-core integration).
 Run:  python app.py   ->  http://127.0.0.1:2053   (admin / admin)
 """
 import io
+import os
 import json
 import time
 import functools
@@ -299,6 +300,10 @@ def _build_outbound_settings(d):
         return {"vnext": [{"address": addr, "port": port, "users": [user_obj]}]}
     if proto == "trojan" and addr:
         return {"servers": [{"address": addr, "port": port, "password": pw or d.get("uuid", "")}]}
+    if proto == "shadowsocks" and addr:
+        return {"servers": [{"address": addr, "port": port,
+                             "method": d.get("method", "chacha20-ietf-poly1305"),
+                             "password": pw or d.get("uuid", "")}]}
     if proto == "wireguard":
         return {"secretKey": d.get("secretKey", ""),
                 "peers": [{"publicKey": d.get("peerKey", ""), "endpoint": f"{addr}:{port}",
@@ -308,14 +313,47 @@ def _build_outbound_settings(d):
     return {}
 
 
+def _build_outbound_stream(d):
+    """Build outbound streamSettings (network + TLS/REALITY) from a spec/URI."""
+    net = d.get("network", "tcp")
+    sec = d.get("security", "none")
+    if net == "tcp" and sec in ("none", "", None):
+        return {}
+    ss = {"network": net}
+    if net == "ws":
+        ss["wsSettings"] = {"path": d.get("path", "/"),
+                            "headers": {"Host": d["host"]} if d.get("host") else {}}
+    elif net == "grpc":
+        ss["grpcSettings"] = {"serviceName": d.get("serviceName", "")}
+    elif net in ("httpupgrade", "xhttp"):
+        key = "httpupgradeSettings" if net == "httpupgrade" else "xhttpSettings"
+        ss[key] = {"path": d.get("path", "/"), "host": d.get("host", "")}
+    if sec == "tls":
+        ss["security"] = "tls"
+        ss["tlsSettings"] = {"serverName": d.get("sni", ""), "allowInsecure": False}
+        if d.get("fp"):
+            ss["tlsSettings"]["fingerprint"] = d["fp"]
+    elif sec == "reality":
+        ss["security"] = "reality"
+        ss["realitySettings"] = {"serverName": d.get("sni", ""), "publicKey": d.get("pbk", ""),
+                                 "shortId": d.get("sid", ""), "fingerprint": d.get("fp", "chrome")}
+    return ss
+
+
 @app.route("/api/outbounds", methods=["POST"])
 @login_required
 def api_outbound_create():
     d = request.get_json(force=True)
+    # Import from a share URI (vless:// / vmess:// / trojan:// / ss://)
+    if d.get("uri"):
+        try:
+            parsed = xc.parse_uri(d["uri"])
+            parsed["tag"] = d.get("tag") or parsed.get("tag")
+            d = {**parsed, "send_through": d.get("send_through", "")}
+        except Exception as e:
+            return jsonify({"ok": False, "error": f"invalid uri: {e}"}), 400
     settings = d.get("settings") or _build_outbound_settings(d)
-    stream = {}
-    if d.get("security") and d.get("security") != "none":
-        stream = {"security": d["security"], "tlsSettings": {"serverName": d.get("sni", "")}}
+    stream = d.get("stream_settings") or _build_outbound_stream(d)
     oid = db.execute(
         """INSERT INTO outbounds
         (tag, protocol, address, port, settings, stream_settings, send_through, enable, created_at)
@@ -436,6 +474,74 @@ def api_xray_keys():
     return jsonify({"ok": True, **keys})
 
 
+# ------------------------------------------------------------------ panel mgmt
+@app.route("/api/panel/version")
+@login_required
+def api_panel_version():
+    s = db.get_settings()
+    return jsonify({"ok": True, "version": core.current_version(),
+                    "repo": s.get("repo_url", "")})
+
+
+@app.route("/api/panel/update", methods=["POST"])
+@login_required
+def api_panel_update():
+    ok, msg = core.update_panel()
+    return jsonify({"ok": ok, "message": msg})
+
+
+@app.route("/api/panel/ssl", methods=["POST"])
+@login_required
+def api_panel_ssl():
+    """Configure panel HTTPS. action: set|selfsigned|disable."""
+    d = request.get_json(force=True)
+    action = d.get("action", "set")
+    if action == "disable":
+        db.set_setting("panel_cert", "")
+        db.set_setting("panel_key", "")
+        return jsonify({"ok": True, "message": "HTTPS disabled (restart panel)"})
+    if action == "selfsigned":
+        ok, res = _gen_self_signed()
+        if not ok:
+            return jsonify({"ok": False, "error": res}), 500
+        db.set_setting("panel_cert", res["cert"])
+        db.set_setting("panel_key", res["key"])
+        return jsonify({"ok": True, "message": "self-signed cert generated (restart panel)", **res})
+    # set explicit paths
+    db.set_setting("panel_cert", d.get("cert", ""))
+    db.set_setting("panel_key", d.get("key", ""))
+    return jsonify({"ok": True, "message": "TLS paths saved (restart panel)"})
+
+
+def _gen_self_signed():
+    try:
+        import datetime
+        from cryptography import x509
+        from cryptography.x509.oid import NameOID
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "TakhtJamshid")])
+        cert = (x509.CertificateBuilder()
+                .subject_name(name).issuer_name(name).public_key(key.public_key())
+                .serial_number(x509.random_serial_number())
+                .not_valid_before(datetime.datetime.utcnow())
+                .not_valid_after(datetime.datetime.utcnow() + datetime.timedelta(days=3650))
+                .sign(key, hashes.SHA256()))
+        cert_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bin", "panel_cert.pem")
+        key_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bin", "panel_key.pem")
+        os.makedirs(os.path.dirname(cert_path), exist_ok=True)
+        with open(cert_path, "wb") as f:
+            f.write(cert.public_bytes(serialization.Encoding.PEM))
+        with open(key_path, "wb") as f:
+            f.write(key.private_bytes(serialization.Encoding.PEM,
+                                      serialization.PrivateFormat.TraditionalOpenSSL,
+                                      serialization.NoEncryption()))
+        return True, {"cert": cert_path, "key": key_path}
+    except Exception as e:
+        return False, str(e)
+
+
 # ------------------------------------------------------------------ settings / account
 @app.route("/api/settings", methods=["GET", "POST"])
 @login_required
@@ -510,9 +616,24 @@ def subscription_info(sub_id):
                            sub_id=sub_id, settings=db.get_settings())
 
 
+def _ssl_context():
+    s = db.get_settings()
+    cert, key = s.get("panel_cert", ""), s.get("panel_key", "")
+    if cert and key and os.path.exists(cert) and os.path.exists(key):
+        import ssl
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(cert, key)
+        return ctx
+    return None
+
+
 if __name__ == "__main__":
+    port = int(os.environ.get("TJ_PORT", "2053"))
+    host = os.environ.get("TJ_HOST", "0.0.0.0")
+    ctx = _ssl_context()
+    scheme = "https" if ctx else "http"
     print("=" * 54)
-    print("  TakhtJamshid Panel  -  http://127.0.0.1:2053")
+    print(f"  TakhtJamshid Panel  -  {scheme}://127.0.0.1:{port}")
     print("  user: admin   pass: admin")
     print("=" * 54)
-    app.run(host="0.0.0.0", port=2053, debug=False, threaded=True)
+    app.run(host=host, port=port, debug=False, threaded=True, ssl_context=ctx)

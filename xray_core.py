@@ -265,8 +265,20 @@ def _query_stats():
     return res
 
 
+def _delta(raw_now, raw_prev):
+    """Counter delta that survives an Xray restart (counters reset to 0)."""
+    d = raw_now - raw_prev
+    return raw_now if d < 0 else d
+
+
 def poll_once():
-    """Pull live counters from xray and persist deltas to the DB."""
+    """Pull live counters from xray and *accumulate* them into the DB.
+
+    Xray's stat counters are cumulative since the process started and reset to
+    zero on every restart, so we store the last raw reading (raw_up/raw_down)
+    and only ever add the positive delta to the persisted totals. This keeps a
+    user's consumed traffic intact across `xray restart`.
+    """
     if not is_running():
         return
     stats = _query_stats()
@@ -274,60 +286,58 @@ def poll_once():
         return
     now = int(time.time())
 
-    # per-client (user>>>ID.email>>>traffic>>>up/down)
-    client_traffic = {}
-    for name, val in stats.items():
-        parts = name.split(">>>")
-        if len(parts) == 4 and parts[0] == "user":
-            ident = parts[1]              # "<cid>.<email>"
-            cid = ident.split(".", 1)[0]
-            if not cid.isdigit():
-                continue
-            cid = int(cid)
-            d = client_traffic.setdefault(cid, [0, 0])
-            if parts[3] == "uplink":
-                d[0] += val
-            else:
-                d[1] += val
-    for cid, (raw_up, raw_down) in client_traffic.items():
-        prev = db.query("SELECT up, down, multiplier FROM clients WHERE id=?", (cid,), one=True)
+    def collect(prefix):
+        agg = {}
+        for name, val in stats.items():
+            parts = name.split(">>>")
+            if len(parts) == 4 and parts[0] == prefix:
+                d = agg.setdefault(parts[1], [0, 0])
+                d[0 if parts[3] == "uplink" else 1] += val
+        return agg
+
+    # per-client (user>>>"<cid>.<email>">>>traffic>>>up|down)
+    for ident, (raw_up, raw_down) in collect("user").items():
+        cid = ident.split(".", 1)[0]
+        if not cid.isdigit():
+            continue
+        cid = int(cid)
+        prev = db.query("SELECT up, down, multiplier, raw_up, raw_down, last_seen "
+                        "FROM clients WHERE id=?", (cid,), one=True)
         if not prev:
             continue
-        mult = prev["multiplier"] if prev["multiplier"] else 1.0
-        up = int(raw_up * mult)
-        down = int(raw_down * mult)
-        online = 1 if (up > prev["up"] or down > prev["down"]) else 0
-        db.execute("UPDATE clients SET up=?, down=?, online=?, last_seen=? WHERE id=?",
-                   (up, down, online, now if online else prev.get("last_seen", 0), cid))
+        mult = prev["multiplier"] or 1.0
+        d_up = _delta(raw_up, prev["raw_up"] or 0)
+        d_down = _delta(raw_down, prev["raw_down"] or 0)
+        new_up = prev["up"] + int(d_up * mult)
+        new_down = prev["down"] + int(d_down * mult)
+        online = 1 if (d_up > 0 or d_down > 0) else 0
+        db.execute("UPDATE clients SET up=?, down=?, raw_up=?, raw_down=?, online=?, last_seen=? "
+                   "WHERE id=?",
+                   (new_up, new_down, raw_up, raw_down, online,
+                    now if online else (prev["last_seen"] or 0), cid))
 
-    # per-inbound (inbound>>>inbound-<id>>>>traffic>>>up/down)
-    inbound_traffic = {}
-    for name, val in stats.items():
-        parts = name.split(">>>")
-        if len(parts) == 4 and parts[0] == "inbound":
-            tag = parts[1]
-            if tag.startswith("inbound-") and tag.split("-", 1)[1].isdigit():
-                iid = int(tag.split("-", 1)[1])
-                d = inbound_traffic.setdefault(iid, [0, 0])
-                if parts[3] == "uplink":
-                    d[0] += val
-                else:
-                    d[1] += val
-    for iid, (up, down) in inbound_traffic.items():
-        db.execute("UPDATE inbounds SET up=?, down=? WHERE id=?", (up, down, iid))
+    # per-inbound (inbound>>>inbound-<id>>>>traffic>>>up|down)
+    for tag, (raw_up, raw_down) in collect("inbound").items():
+        if not (tag.startswith("inbound-") and tag.split("-", 1)[1].isdigit()):
+            continue
+        iid = int(tag.split("-", 1)[1])
+        prev = db.query("SELECT up, down, raw_up, raw_down FROM inbounds WHERE id=?", (iid,), one=True)
+        if not prev:
+            continue
+        new_up = prev["up"] + _delta(raw_up, prev["raw_up"] or 0)
+        new_down = prev["down"] + _delta(raw_down, prev["raw_down"] or 0)
+        db.execute("UPDATE inbounds SET up=?, down=?, raw_up=?, raw_down=? WHERE id=?",
+                   (new_up, new_down, raw_up, raw_down, iid))
 
     # per-outbound
-    out_traffic = {}
-    for name, val in stats.items():
-        parts = name.split(">>>")
-        if len(parts) == 4 and parts[0] == "outbound":
-            d = out_traffic.setdefault(parts[1], [0, 0])
-            if parts[3] == "uplink":
-                d[0] += val
-            else:
-                d[1] += val
-    for tag, (up, down) in out_traffic.items():
-        db.execute("UPDATE outbounds SET up=?, down=? WHERE tag=?", (up, down, tag))
+    for tag, (raw_up, raw_down) in collect("outbound").items():
+        prev = db.query("SELECT up, down, raw_up, raw_down FROM outbounds WHERE tag=?", (tag,), one=True)
+        if not prev:
+            continue
+        new_up = prev["up"] + _delta(raw_up, prev["raw_up"] or 0)
+        new_down = prev["down"] + _delta(raw_down, prev["raw_down"] or 0)
+        db.execute("UPDATE outbounds SET up=?, down=?, raw_up=?, raw_down=? WHERE tag=?",
+                   (new_up, new_down, raw_up, raw_down, tag))
 
 
 def _enforce():
@@ -367,3 +377,66 @@ def _start_poller():
     _poller_started = True
     t = threading.Thread(target=_poller_loop, daemon=True)
     t.start()
+
+
+# ----------------------------------------------------------------- self-update
+def update_panel(repo_url=None):
+    """Update the panel source from GitHub.
+
+    Uses `git pull` when the install is a git checkout; otherwise downloads the
+    repo zip and overlays the .py / templates / static files (DB is preserved).
+    """
+    repo_url = (repo_url or db.get_settings().get("repo_url")
+                or "https://github.com/S1rChips/TakhtJamshid-UI").rstrip("/")
+    if os.path.isdir(os.path.join(BASE, ".git")):
+        try:
+            out = subprocess.run(["git", "-C", BASE, "pull", "--ff-only"],
+                                 capture_output=True, text=True, timeout=120)
+            ok = out.returncode == 0
+            db.log("Panel update via git: " + (out.stdout or out.stderr).strip()[-200:])
+            return ok, (out.stdout + out.stderr).strip()[-500:]
+        except Exception as e:
+            return False, str(e)
+    # zip overlay
+    try:
+        url = repo_url + "/archive/refs/heads/main.zip"
+        tmp = os.path.join(BASE, "_update.zip")
+        req = urllib.request.Request(url, headers={"User-Agent": "TakhtJamshid"})
+        with urllib.request.urlopen(req, timeout=120) as r, open(tmp, "wb") as f:
+            f.write(r.read())
+        import shutil
+        extract_dir = os.path.join(BASE, "_update")
+        if os.path.isdir(extract_dir):
+            shutil.rmtree(extract_dir, ignore_errors=True)
+        with zipfile.ZipFile(tmp) as z:
+            z.extractall(extract_dir)
+        roots = [os.path.join(extract_dir, d) for d in os.listdir(extract_dir)]
+        src = next((d for d in roots if os.path.isdir(d)), extract_dir)
+        for rel in ("app.py", "database.py", "xray_core.py", "xray_config.py",
+                    "telegram_bot.py", "requirements.txt", "templates", "static"):
+            s = os.path.join(src, rel)
+            d = os.path.join(BASE, rel)
+            if not os.path.exists(s):
+                continue
+            if os.path.isdir(s):
+                shutil.copytree(s, d, dirs_exist_ok=True)
+            else:
+                shutil.copy2(s, d)
+        shutil.rmtree(extract_dir, ignore_errors=True)
+        os.remove(tmp)
+        db.log("Panel updated from zip")
+        return True, "updated from zip (restart the panel to apply)"
+    except Exception as e:
+        db.log(f"Panel update failed: {e}", "error")
+        return False, str(e)
+
+
+def current_version():
+    vf = os.path.join(BASE, "VERSION")
+    if os.path.exists(vf):
+        try:
+            with open(vf) as f:
+                return f.read().strip()
+        except Exception:
+            pass
+    return "1.0.0"
